@@ -1,5 +1,6 @@
 import os, logging
 from google.cloud import bigquery
+
 logger = logging.getLogger("ingestor")
 
 PROJECT_ID = os.getenv("PROJECT_ID")
@@ -29,11 +30,10 @@ def ensure_table():
 def insert_rows(rows):
     client = bigquery.Client(project=PROJECT_ID)
     table_id = ensure_table()
+    logger.info("BQ inserting %d rows into %s", len(rows), table_id)
     errors = client.insert_rows_json(table_id, rows)
     if errors:
         logger.error("BQ insert returned errors: %s", errors)
     return errors
 
-        logger.exception("insert_rows failed")
-        raise
 
