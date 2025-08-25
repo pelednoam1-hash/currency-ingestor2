@@ -1,33 +1,34 @@
-import os
-import requests
-from datetime import datetime
+import os, logging, requests
+from fastapi import HTTPException
 
+logger = logging.getLogger("ingestor")
 API_KEY = os.getenv("EXCHANGE_API_KEY")
 
-class ApiError(Exception):
-    pass
-
-def fetch_rates(base: str) -> dict:
+def fetch_rates(base: str):
     if not API_KEY:
-        raise ApiError("Missing EXCHANGE_API_KEY")
+        logger.error("Missing EXCHANGE_API_KEY")
+        raise HTTPException(status_code=500, detail="Missing EXCHANGE_API_KEY")
 
     url = f"https://v6.exchangerate-api.com/v6/{API_KEY}/latest/{base.upper()}"
+    logger.info("Calling exchangerate: %s", url)
     r = requests.get(url, timeout=15)
-    r.raise_for_status()
-    j = r.json()
+    logger.info("exchangerate status=%s", r.status_code)
 
-    # איחוד לשם 'rates' לא משנה איזה ספק
-    if "rates" in j:
-        rates = j["rates"]
-    elif "conversion_rates" in j:
-        rates = j["conversion_rates"]
+    try:
+        data = r.json()
+    except Exception:
+        logger.exception("JSON decode failed from exchangerate")
+        raise HTTPException(status_code=502, detail="Bad response from exchangerate")
+
+    # התאמה למבנה שהקוד מצפה לו
+    if "conversion_rates" in data:
+        normalized = {"date": data.get("time_last_update_utc", "")[:10],
+                      "base": data.get("base_code", base.upper()),
+                      "rates": data["conversion_rates"]}
     else:
-        raise ApiError(f"No rates key in API response: keys={list(j.keys())}")
+        logger.error("Unexpected payload: %s", list(data.keys()))
+        raise HTTPException(status_code=502, detail="Unexpected exchangerate payload")
 
-    # תאריך בסיסי לשורה (אפשר גם מה־API אם קיים)
-    return {
-        "date": datetime.utcnow().date().isoformat(),
-        "base": j.get("base_code", base.upper()),
-        "rates": rates,
-    }
+    logger.info("exchangerate got %d rates for base=%s", len(normalized["rates"]), normalized["base"])
+    return normalized
 
