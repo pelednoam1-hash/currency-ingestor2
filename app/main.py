@@ -1,13 +1,14 @@
-import os
-import logging
+# app/main.py
+import logging, os
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from datetime import datetime, timezone
 from typing import List
-from app.exchangerate import fetch_rates, ApiError
-from app.bq import ensure_table, insert_rows
+from app.exchangerate import fetch_rates
+from app.bq import insert_rows, ensure_table
+from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("app")
+logger = logging.getLogger("ingestor")
 
 app = FastAPI(title="Currency Ingestor")
 
@@ -25,48 +26,36 @@ def health():
 def ingest(
     base: str = Query(default="USD"),
     targets: str = Query(default="ILS,EUR,GBP"),
-    dry_run: bool = Query(default=False)
 ):
     try:
-        data = fetch_rates(base)
-        ensure_table()  # יוודא שהטבלה קיימת
-
+        # נקה ירידות שורה ורווחים מיותרים
+        targets = targets.strip()
         targets_list = [t.strip().upper() for t in targets.split(",") if t.strip()]
-        available = data["rates"].keys()
+        if not targets_list:
+            raise ValueError("targets is empty")
 
-        rows = []
-        for t in targets_list:
-            if t not in available:
-                log.warning("Target %s not in API response", t)
-                continue
-            rows.append({
-                "date": data["date"],
-                "base": data["base"],
-                "target": t,
-                "rate": float(data["rates"][t]),
-                "ingested_at": None,  # ימולא ע״י BQ בתור TIMESTAMP אם תרצה
-            })
+        # משיכת שערים
+        data = fetch_rates(base)  # בפונקציה אנחנו קוראים ל-EXCHANGE_API_KEY מהסביבה
+        ensure_table()
 
-        if not rows:
-            raise HTTPException(status_code=400, detail="No targets matched the API response")
-
-        if dry_run:
-            log.info("Dry-run: not inserting to BigQuery")
-            return IngestResponse(inserted=len(rows), date=data["date"], base=data["base"], targets=targets_list)
+        now = datetime.now(timezone.utc).isoformat()
+        rows = [
+            {"date": data["date"], "base": data["base"], "target": t,
+             "rate": float(data["rates"][t]), "ingested_at": now}
+            for t in targets_list if t in data["rates"]
+        ]
 
         errors = insert_rows(rows)
         if errors:
-            log.error("BigQuery insert errors: %s", errors)
-            raise HTTPException(status_code=500, detail={"bq_errors": errors})
+            logger.error("BigQuery insert errors: %s", errors)
+            raise RuntimeError(f"BigQuery insert errors: {errors}")
 
-        return IngestResponse(inserted=len(rows), date=data["date"], base=data["base"], targets=targets_list)
+        return IngestResponse(
+            inserted=len(rows), date=data["date"], base=data["base"], targets=targets_list
+        )
 
-    except ApiError as e:
-        log.error("Exchange API error: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.exception("Unhandled error in /ingest")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Unhandled error in /ingest")
+        raise HTTPException(status_code=500, detail="Internal error; see logs.")
+
 
