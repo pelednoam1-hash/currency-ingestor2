@@ -1,4 +1,3 @@
-# app/main.py
 import logging
 from fastapi import FastAPI, HTTPException, Query
 from typing import List
@@ -8,7 +7,6 @@ from app.bq import ensure_table, insert_rows
 
 app = FastAPI(title="Currency Ingestor")
 
-# לוגגר בסיסי שנכתב ל-stdout/stderr ונאסף ע"י Cloud Run
 logger = logging.getLogger("ingestor")
 logger.setLevel(logging.INFO)
 
@@ -45,9 +43,7 @@ def ingest(
             targets=targets_list
         )
     except Exception:
-        # חשוב: מדפיס Traceback ל-stderr כדי שיופיע ב-Logs Explorer
         logger.exception("INGEST FAILED")
-        # מרים שוב את החריגה כדי ש-FastAPI יחזיר 500
         raise
 
     errors = insert_rows(rows)
