@@ -1,22 +1,33 @@
 import os
-from typing import Dict
-import httpx
-from fastapi import HTTPException
+import requests
+from datetime import datetime
 
-API_KEY = os.getenv("EXCHANGE_API_KEY", "")  
-BASE_URL = os.getenv("EXCHANGE_API_URL", "https://v6.exchangerate-api.com/v6")
+API_KEY = os.getenv("EXCHANGE_API_KEY")
 
-async def fetch_rates(base: str) -> Dict:
+class ApiError(Exception):
+    pass
+
+def fetch_rates(base: str) -> dict:
     if not API_KEY:
-        raise HTTPException(status_code=500, detail="Missing EXCHANGE_API_KEY")
+        raise ApiError("Missing EXCHANGE_API_KEY")
 
-    url = f"{BASE_URL}/{API_KEY}/latest/{base.upper()}"
-    timeout = httpx.Timeout(20.0, read=20.0, connect=10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.get(url)
-        if r.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Rates API error: {r.text}")
-        data = r.json()
-        if data.get("result") != "success":
-            raise HTTPException(status_code=502, detail=f"Rates API error: {data}")
-        return data
+    url = f"https://v6.exchangerate-api.com/v6/{API_KEY}/latest/{base.upper()}"
+    r = requests.get(url, timeout=15)
+    r.raise_for_status()
+    j = r.json()
+
+    # איחוד לשם 'rates' לא משנה איזה ספק
+    if "rates" in j:
+        rates = j["rates"]
+    elif "conversion_rates" in j:
+        rates = j["conversion_rates"]
+    else:
+        raise ApiError(f"No rates key in API response: keys={list(j.keys())}")
+
+    # תאריך בסיסי לשורה (אפשר גם מה־API אם קיים)
+    return {
+        "date": datetime.utcnow().date().isoformat(),
+        "base": j.get("base_code", base.upper()),
+        "rates": rates,
+    }
+
