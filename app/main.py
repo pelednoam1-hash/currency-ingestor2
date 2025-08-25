@@ -1,13 +1,12 @@
-# app/main.py
 import logging, os
 from fastapi import FastAPI, HTTPException, Query
 from datetime import datetime, timezone
 from typing import List
+from pydantic import BaseModel
 from app.exchangerate import fetch_rates
 from app.bq import insert_rows, ensure_table
-from pydantic import BaseModel
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)  # שים DEBUG כדי לראות הכל
 logger = logging.getLogger("ingestor")
 
 app = FastAPI(title="Currency Ingestor")
@@ -27,35 +26,51 @@ def ingest(
     base: str = Query(default="USD"),
     targets: str = Query(default="ILS,EUR,GBP"),
 ):
+    logger.info("INGEST start base=%s targets_raw=%r", base, targets)
+
     try:
-        # נקה ירידות שורה ורווחים מיותרים
-        targets = targets.strip()
+        # נקה תווי שורה/רווחים
+        targets = (targets or "").strip()
         targets_list = [t.strip().upper() for t in targets.split(",") if t.strip()]
         if not targets_list:
-            raise ValueError("targets is empty")
+            logger.error("Empty targets after parsing")
+            raise HTTPException(status_code=400, detail="targets is empty")
 
-        # משיכת שערים
-        data = fetch_rates(base)  # בפונקציה אנחנו קוראים ל-EXCHANGE_API_KEY מהסביבה
+        data = fetch_rates(base)  # בפונקציה הזו נוסיף גם לוגים (סעיף C)
         ensure_table()
 
         now = datetime.now(timezone.utc).isoformat()
-        rows = [
-            {"date": data["date"], "base": data["base"], "target": t,
-             "rate": float(data["rates"][t]), "ingested_at": now}
-            for t in targets_list if t in data["rates"]
-        ]
+        rows = []
+        for t in targets_list:
+            if t not in data.get("rates", {}):
+                logger.warning("Target %s not in rates (available=%s)", t, list(data.get("rates", {}).keys())[:10])
+                continue
+            rows.append({
+                "date": data["date"],
+                "base": data["base"],
+                "target": t,
+                "rate": float(data["rates"][t]),
+                "ingested_at": now
+            })
+
+        logger.info("Prepared %d rows; first=%s", len(rows), rows[0] if rows else None)
 
         errors = insert_rows(rows)
         if errors:
             logger.error("BigQuery insert errors: %s", errors)
             raise RuntimeError(f"BigQuery insert errors: {errors}")
 
-        return IngestResponse(
-            inserted=len(rows), date=data["date"], base=data["base"], targets=targets_list
-        )
+        resp = IngestResponse(inserted=len(rows), date=data["date"], base=data["base"], targets=targets_list)
+        logger.info("INGEST done: %s", resp)
+        return resp
 
+    except HTTPException as e:
+        # גם HTTPException יתועד
+        logger.error("HTTPException %s", e.detail)
+        raise
     except Exception:
         logger.exception("Unhandled error in /ingest")
         raise HTTPException(status_code=500, detail="Internal error; see logs.")
+
 
 
